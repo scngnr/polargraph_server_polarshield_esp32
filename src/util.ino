@@ -75,6 +75,21 @@ void transform(long &tA, long &tB)
 
 }
 
+// Long motor loops have to block, but the current ESP32 core resets the chip
+// if the loop task is starved for a few seconds. delay(1) lets that task run
+// and services the watchdog. A 1ms pause a few times a second is not visible
+// on a plotter; a tight loop with no delay is a reboot mid-line.
+static unsigned long motionLastYieldMs = 0;
+
+void motion_yieldIfDue()
+{
+  unsigned long now = millis();
+  if ((unsigned long)(now - motionLastYieldMs) >= 200UL) {
+    motionLastYieldMs = now;
+    delay(1);
+  }
+}
+
 void changeLength(float tA, float tB)
 {
   changeLength((long)tA, (long)tB);
@@ -117,6 +132,16 @@ void changeLength(long tA, long tB)
       
     motorA.setSpeed(currSpeedA);
     motorB.setSpeed(currSpeedB);
+
+    // runSpeedToPosition() steps only when the speed is non-zero. A 0 speed
+    // (acceleration parsed as 0, or a restored speed of 0) leaves distanceToGo
+    // unchanged and this loop never returns.
+    if (motorA.distanceToGo() != 0 && motorA.speed() == 0.0) {
+      motorA.setSpeed(motorA.distanceToGo() > 0 ? currentMaxSpeed : -currentMaxSpeed);
+    }
+    if (motorB.distanceToGo() != 0 && motorB.speed() == 0.0) {
+      motorB.setSpeed(motorB.distanceToGo() > 0 ? currentMaxSpeed : -currentMaxSpeed);
+    }
   }
   
   
@@ -143,8 +168,9 @@ void changeLength(long tA, long tB)
       }
     }
     else {
-      impl_runBackgroundProcesses();
+      impl_serviceUi();
     }
+    motion_yieldIfDue();
   }
 
   lastOperationTime = millis();
@@ -182,8 +208,9 @@ void changeLengthRelative(long tA, long tB)
       }
     }
     else {
-      impl_runBackgroundProcesses();
-    }    
+      impl_serviceUi();
+    }
+    motion_yieldIfDue();
   }
   
   lastOperationTime = millis();
@@ -244,6 +271,7 @@ void moveA(int dist)
     // impl_runBackgroundProcesses();
     if (currentlyRunning)
       motorA.run();
+    motion_yieldIfDue();
   }
   lastOperationTime = millis();
 }
@@ -261,6 +289,7 @@ void moveB(int dist)
     // impl_runBackgroundProcesses();
     if (currentlyRunning)
       motorB.run();
+    motion_yieldIfDue();
   }
   lastOperationTime = millis();
 }

@@ -99,6 +99,11 @@ int button_genericButtonAction(int buttonId)
   #ifdef DEBUG_FUNCTION_BOUNDARIES
   printf("\t\t\t\tEnter %s at %d\n", __FUNCTION__, millis());
   #endif
+  // Draw-from-file runs for the whole file inside this call. The usual
+  // end-of-action swap would leave "draw this" on screen the entire time
+  // and turn it into "stop file" only after the file finished. A second
+  // touch would start another playback on top of the first one.
+  boolean suppressEndSwap = false;
   #ifdef DEBUG_MENU_DRAWING
   Serial.print("ButtonId: ");
   Serial.println(buttonId);
@@ -189,7 +194,13 @@ int button_genericButtonAction(int buttonId)
        Serial.println(commandFilename);
        currentlyDrawingFromFile = true;
        displayTouched = false;
+       // Show "stop file" before the blocking playback, so a touch can
+       // clear currentlyDrawingFromFile instead of opening the file again.
+       replaceButtonInMenus(BUTTON_DRAW_THIS_FILE, BUTTON_STOP_FILE);
+       lcd_drawCurrentMenu();
        impl_exec_execFromStore(commandFilename);
+       replaceButtonInMenus(BUTTON_STOP_FILE, BUTTON_DRAW_THIS_FILE);
+       suppressEndSwap = true;
       }
       break;
     case BUTTON_STOP_FILE:
@@ -352,7 +363,9 @@ int button_genericButtonAction(int buttonId)
       recalculateMachineSizeInSteps();
       break;
   }
-  button_genericButtonActionEnd(&button);
+  if (!suppressEndSwap) {
+    button_genericButtonActionEnd(&button);
+  }
   #ifdef DEBUG_FUNCTION_BOUNDARIES
   printf("\t\t\t\tExit %s at %d\n", __FUNCTION__, millis());
   #endif

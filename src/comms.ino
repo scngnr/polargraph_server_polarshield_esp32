@@ -295,6 +295,12 @@ boolean comms_isMachineReadyForNextCommand()
 
 void comms_broadcastStatus()
 {
+  // A stored drawing is not a moment to advertise READY. The controller
+  // treats READY as "send the next command", and a READY in the middle of
+  // a file would desynchronise the link. Normal idle broadcasts are unchanged.
+  if (currentlyDrawingFromFile) {
+    return;
+  }
   if (comms_isMachineReadyForNextCommand()) {
     reportPosition();
     reportStepRate();

@@ -74,8 +74,10 @@ void calibrate_doCalibration()
   // wind out a machines-width of cord from motorA
   motorA.moveTo(machineSizeSteps.x);
   motorA.setAcceleration(currentAcceleration);
-  while (motorA.distanceToGo() != 0)
+  while (motorA.distanceToGo() != 0) {
     motorA.run();
+    motion_yieldIfDue();
+  }
     
   // now do above for motorB
   motorB.enableOutputs();
@@ -132,6 +134,7 @@ void calibrate_doCalibration()
   {
     motorA.run();
     motorB.run();
+    motion_yieldIfDue();
   }
 
   reportPosition();

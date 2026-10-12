@@ -140,7 +140,7 @@ boolean debugComms = false;
     These variables are common to all polargraph server builds
 =========================================================== */
 
-const String FIRMWARE_VERSION_NO = "2.2.0";
+const String FIRMWARE_VERSION_NO = "2.2.1";
 extern String firmwareBuildName;
 
 #if MOTHERBOARD == RAMPS14
@@ -410,9 +410,25 @@ void setup()
 Loop() is quite simple because reading commands from the serial port is done
 asynchronously by commsRunner.
 Motors are also stepped asynchronously, using tasks.
+
+While a stored file is playing, that work runs on the higher-priority UI task
+and used to starve this task. The current ESP32 core puts loop() on the task
+watchdog, so this task has to keep running, but it must not emit READY or
+start a second command on top of the file. Incoming bytes stay in the comms
+buffer and are handled when the file finishes.
 */
+// Defined with the SD-card state further down. loop() has to see it
+// because file playback runs on another task and must not be treated
+// as an idle machine.
+extern boolean currentlyDrawingFromFile;
+
 void loop()
 {
+  if (currentlyDrawingFromFile) {
+    delay(10);
+    return;
+  }
+
 // comms_pollForConfirmedCommand checks for a completed command in
 // the command buffer, and executes it if it exists.
   comms_pollForConfirmedCommand();
@@ -446,11 +462,29 @@ const static String CMD_DRAW_NORWEGIAN = "C43";
 const static String CMD_DRAW_NORWEGIAN_OUTLINE = "C44";
 const static String CMD_AUTO_CALIBRATE = "C48";
 
-/*  End stop pin definitions  */
-const int ENDSTOP_X_MAX = 17;
+/*  End stop pin definitions.
+
+    These used to be 17, 16, 15 and 14, copied from the Mega Polarshield.
+    On Polarshield v3 that is wrong, and it is not just unused:
+
+      GPIO14 is motor A step
+      GPIO15 is motor B direction
+
+    configuration_setup() applies INPUT_PULLUP to every endstop pin after
+    AccelStepper has set the step/dir pins as outputs. On the current
+    ESP32 core that turns the motor drivers off, so the machine cannot
+    step. The v3 schematic wires endstops to none of these GPIOs.
+
+    The replacements are free on that board:
+      16  GP_3, unconnected
+      32  T_IRQ, open solder jumper SJ8
+      21  CN1 pin 2 (expansion)
+      17  CN1 pin 6 (expansion)
+*/
+const int ENDSTOP_X_MAX = 21;
 const int ENDSTOP_X_MIN = 16;
-const int ENDSTOP_Y_MAX = 15;
-const int ENDSTOP_Y_MIN = 14;
+const int ENDSTOP_Y_MAX = 17;
+const int ENDSTOP_Y_MIN = 32;
 
 long ENDSTOP_X_MIN_POSITION = 130;
 long ENDSTOP_Y_MIN_POSITION = 130;
