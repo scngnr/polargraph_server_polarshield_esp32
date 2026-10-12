@@ -97,12 +97,8 @@ void impl_executeCommand(String inCmd, String inParam1, String inParam2, String 
 /* Polarshield implementation of runBackgroundProcesses. 
 *  This is basically stuff to do with the screen.
 */
-void impl_runBackgroundProcesses()
+void impl_serviceUi()
 {
-  #ifdef DEBUG_FUNCTION_BOUNDARIES
-  printf("\n\n\tEnter %s at %d\n", __FUNCTION__, millis());
-  #endif
-
   impl_runBackgroundTouchProcesses();
   impl_runBackgroundDrawProcesses();
 
@@ -111,6 +107,20 @@ void impl_runBackgroundProcesses()
   {
     Serial.println("Powering down because of inactivity.");
     buttons_actions_motorsOff();
+  }
+}
+
+void impl_runBackgroundProcesses()
+{
+  #ifdef DEBUG_FUNCTION_BOUNDARIES
+  printf("\n\n\tEnter %s at %d\n", __FUNCTION__, millis());
+  #endif
+
+  // File playback calls impl_serviceUi() itself, between SD reads.
+  // This task also calling it clocks the touch controller while the
+  // card is using the same SPI pins.
+  if (!currentlyDrawingFromFile) {
+    impl_serviceUi();
   }
  
   #ifdef DEBUG_FUNCTION_BOUNDARIES
@@ -142,7 +152,9 @@ void impl_exec_execFromStore()
     Serial.println(fileToExec);
     commandFilename = fileToExec;
     impl_exec_execFromStore(commandFilename);
-    currentlyDrawingFromFile = true;
+    // The playback function clears currentlyDrawingFromFile when it
+    // finishes or is stopped. Leaving it true here made the machine
+    // look busy after a stored C34 had already ended.
   }
   else
   {
@@ -151,94 +163,201 @@ void impl_exec_execFromStore()
 
 }
 
+// Drop leading and trailing spaces in a stored command line. The serial
+// parser never sees those; files sometimes have them, and trim() used to
+// do this on the Arduino String.
+static void playback_trimLine(char *command, int *length)
+{
+  int start = 0;
+  int end = *length;
+  while (start < end && (command[start] == ' ' || command[start] == '\t')) {
+    start++;
+  }
+  while (end > start && (command[end - 1] == ' ' || command[end - 1] == '\t')) {
+    end--;
+  }
+  int kept = end - start;
+  if (start > 0 && kept > 0) {
+    memmove(command, command + start, kept);
+  }
+  command[kept] = 0;
+  *length = kept;
+}
+
 void impl_exec_execFromStore(String inFilename)
 {
-  if (inFilename != "")
-  {
-    String noBlanks = "";
-    // remove blanks
-    for (int i = 0; i<inFilename.length(); i++)
-    {
-      if (inFilename[i] != ' ')
-        noBlanks = noBlanks + inFilename[i];
-    }
-
-    char filename[noBlanks.length()+1];
-    noBlanks.toCharArray(filename, noBlanks.length()+1);
-#ifdef DEBUG_SD
-    Serial.print("Array to read from: ");
-    Serial.println(filename);
-#endif
-    File readFile = SD.open(filename, FILE_READ);
-    if (readFile)
-    {
-      Serial.print("Opened file:");
-      Serial.println(noBlanks);
-      String command = "";
-      while (readFile.available() && currentlyDrawingFromFile)
-      {
-#ifdef DEBUG_SD
-        Serial.println("Reading...");
-        // poll for input
-#endif
-        char ch = readFile.read();
-#ifdef DEBUG_SD
-        Serial.print(".");
-        Serial.print(ch);
-        Serial.print("-");
-#endif
-        if (ch == INTERMINATOR || ch == SEMICOLON)
-        {
-#ifdef DEBUG_SD
-          Serial.println("New line");
-#endif
-          // execute the line
-          command.trim();
-          command.toCharArray(currentCommand, INLENGTH+1);
-          boolean commandParsed = comms_parseCommand(currentCommand);
-          if (commandParsed)
-          {
-#ifdef DEBUG_SD
-            Serial.println("Stored command parsed.");
-#endif
-            Serial.print(F("Executing command:"));
-            Serial.println(command);
-            if (echoingStoredCommands) {
-              lcd_echoLastCommandToDisplay(inCmd, inParam1, inParam2, inParam3, inParam4, inNoOfParams, inFilename+": ");
-            }
-            impl_executeCommand(inCmd, inParam1, inParam2, inParam3, inParam4, inNoOfParams);
-          }
-#ifdef DEBUG_SD
-          else Serial.println("Stored command WAS NOT parsed.");
-#endif
-          command = "";
-          impl_runBackgroundProcesses();
-        }
-        else {
-          command += ch;
-        }
-
-#ifdef DEBUG_SD
-        Serial.print("Command building:");
-        Serial.println(command);
-#endif
-      }
-      Serial.println("Finished with the file.");
-      currentlyDrawingFromFile = false;
-      readFile.close();
-    }
-    else
-    {
-      Serial.println("Couldn't find that file, btw.");
-      currentlyDrawingFromFile = false;
-    }
+  // Playback is synchronous and not re-entrant. A second entry (another
+  // touch, or a stored C34) would open the card again and share inCmd
+  // with the caller.
+  static boolean playbackActive = false;
+  if (playbackActive) {
+    Serial.println("Already drawing from a file.");
+    return;
   }
-  else
+
+  if (inFilename == "")
   {
     Serial.println("No filename supplied to read from.");
     currentlyDrawingFromFile = false;
+    return;
   }
-   
+  playbackActive = true;
+
+  String noBlanks = "";
+  // remove blanks
+  for (int i = 0; i<inFilename.length(); i++)
+  {
+    if (inFilename[i] != ' ')
+      noBlanks = noBlanks + inFilename[i];
+  }
+
+  char filename[noBlanks.length()+1];
+  noBlanks.toCharArray(filename, noBlanks.length()+1);
+#ifdef DEBUG_SD
+  Serial.print("Array to read from: ");
+  Serial.println(filename);
+#endif
+
+  // The directory listing keeps `root` open for the whole session. The
+  // ESP32 SD driver has corrupted sequential reads when a second file is
+  // open at the same time, which showed up as lines drawn in the wrong
+  // place. Close it for the duration of playback.
+  boolean reopenRoot = false;
+  if (root) {
+    reopenRoot = true;
+    root.close();
+  }
+
+  sd_deselectSharedSpiDevices();
+  File readFile = SD.open(filename, FILE_READ);
+  if (!readFile && filename[0] != '/') {
+    String slashName = String("/") + noBlanks;
+    char slashFile[slashName.length() + 1];
+    slashName.toCharArray(slashFile, slashName.length() + 1);
+    readFile = SD.open(slashFile, FILE_READ);
+  }
+
+  // Hold the serial command slot for the whole file. The comms ticker and
+  // loop() share inCmd / currentCommand with this parser; letting a USB
+  // command run in the middle overwrites the move that was just read.
+  boolean alreadyExecuting = currentlyExecutingACommand;
+  currentlyExecutingACommand = true;
+
+  if (!readFile)
+  {
+    Serial.println("Couldn't find that file, btw.");
+    currentlyDrawingFromFile = false;
+    currentlyExecutingACommand = alreadyExecuting;
+    playbackActive = false;
+    if (reopenRoot) {
+      root = SD.open("/", FILE_READ);
+    }
+    return;
+  }
+
+  Serial.print("Opened file:");
+  Serial.println(noBlanks);
+
+  // Fixed line buffer, same ceiling as the serial parser (INLENGTH).
+  // The old `String command += ch` reallocates on every byte. A vector
+  // file is a couple of hundred thousand lines; that fragments the heap
+  // until a later append silently drops characters or the allocator
+  // fails. Dropped characters turn "C17,1266,1555,2,END" into a different
+  // move (the "right line, wrong place" symptom) or into a line whose
+  // segment length parses as 0, which hangs exec_drawBetweenPoints.
+  // Lines longer than the serial limit are discarded, matching the
+  // serial overrun path, instead of being truncated into a wrong command.
+  char command[INLENGTH + 1];
+  int commandLen = 0;
+  boolean overflow = false;
+  unsigned long lastUiMs = millis();
+  uint8_t chunk[128];
+  int chunkLen = 0;
+  int chunkPos = 0;
+
+  while (currentlyDrawingFromFile)
+  {
+    if (chunkPos >= chunkLen) {
+      // Read a block with the display and touch chip-selects released,
+      // then parse it from RAM. Touch was previously sampled on every
+      // byte, interleaved with the card on the shared SPI bus.
+      sd_deselectSharedSpiDevices();
+      chunkLen = (int)readFile.read(chunk, sizeof(chunk));
+      chunkPos = 0;
+      if (chunkLen <= 0) {
+        break;
+      }
+    }
+
+    char ch = (char)chunk[chunkPos++];
+    if (ch == '\r') {
+      continue;
+    }
+
+    if (ch == INTERMINATOR || ch == SEMICOLON)
+    {
+      if (!overflow && commandLen > 0)
+      {
+        playback_trimLine(command, &commandLen);
+      }
+      if (!overflow && commandLen > 0)
+      {
+        memcpy(currentCommand, command, commandLen + 1);
+        boolean commandParsed = comms_parseCommand(currentCommand);
+        if (commandParsed)
+        {
+#ifdef DEBUG_SD
+          Serial.println("Stored command parsed.");
+#endif
+          Serial.print(F("Executing command:"));
+          Serial.println(command);
+          if (echoingStoredCommands) {
+            lcd_echoLastCommandToDisplay(inCmd, inParam1, inParam2, inParam3, inParam4, inNoOfParams, inFilename+": ");
+          }
+          impl_executeCommand(inCmd, inParam1, inParam2, inParam3, inParam4, inNoOfParams);
+        }
+#ifdef DEBUG_SD
+        else Serial.println("Stored command WAS NOT parsed.");
+#endif
+      }
+      else if (overflow)
+      {
+        Serial.println("Stored command longer than serial limit, skipped.");
+      }
+      commandLen = 0;
+      overflow = false;
+
+      // The stop button lives on this same task, so the UI has to be
+      // pumped from here. Doing it on a timer, and only between card
+      // reads, keeps the touch controller off the bus while the card
+      // is clocked.
+      unsigned long now = millis();
+      if ((unsigned long)(now - lastUiMs) >= 50UL) {
+        lastUiMs = now;
+        sd_deselectSharedSpiDevices();
+        impl_serviceUi();
+      }
+      motion_yieldIfDue();
+    }
+    else if (commandLen < INLENGTH)
+    {
+      command[commandLen++] = ch;
+      command[commandLen] = 0;
+    }
+    else
+    {
+      overflow = true;
+    }
+  }
+
+  Serial.println("Finished with the file.");
+  currentlyDrawingFromFile = false;
+  readFile.close();
+  currentlyExecutingACommand = alreadyExecuting;
+  playbackActive = false;
+  if (reopenRoot) {
+    root = SD.open("/", FILE_READ);
+  }
 }
 
 void impl_exec_changeToStoreCommandMode()

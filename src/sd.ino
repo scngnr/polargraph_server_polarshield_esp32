@@ -23,6 +23,18 @@ void sd_initSD()
   sd_initAutoStartFile();
 }
 
+// TFT, touch and the SD socket share one SPI bus (GPIO18/19/23) with
+// separate chip-selects (5, 33 and 25). A transaction left addressed at
+// the display or the touch controller corrupts the next card read, and a
+// card that never finishes a response blocks the UI task for good.
+// Idle every select before handing the bus to another device.
+void sd_deselectSharedSpiDevices()
+{
+  digitalWrite(sdChipSelectPin, HIGH);
+  digitalWrite(TFT_CS, HIGH);
+  digitalWrite(TOUCH_CS, HIGH);
+}
+
 void sd_resetCard()
 {
   currentlyDrawingFromFile = false;

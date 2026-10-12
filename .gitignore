@@ -217,6 +217,7 @@ pip-log.txt
 #PlatformIO files
 .pioenvs
 .piolibdeps
+.pio
 .clang_complete
 .gcc-flags.json
 .vscode

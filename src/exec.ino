@@ -299,6 +299,16 @@ void exec_changeLengthDirect()
   float endA = multiplier(atof(inParam1));
   float endB = multiplier(atof(inParam2));
   int maxSegmentLength = atoi(inParam3);
+  // A missing or non-numeric third field parses as 0 (for example the
+  // parameter is "END" after a short read dropped ",2"). The segment
+  // splitter below is `while (delta / linesegs > maxSegmentLength)`.
+  // With maxSegmentLength <= 0 that comparison stays true and linesegs
+  // climbs forever: pen left down, motors still enabled, no steps, UI dead.
+  // That matches the mid-file freezes in upstream issue #9. One segment
+  // still draws the chord instead of hanging.
+  if (maxSegmentLength < 1) {
+    maxSegmentLength = 1;
+  }
 
   float startA = motorA.currentPosition();
   float startB = motorB.currentPosition();
@@ -369,10 +379,12 @@ void exec_drawBetweenPoints(float p1a, float p1b, float p2a, float p2b, int maxS
     // float totalDistance = sqrt(sq(deltaX) + sq(deltaY));
 
     long linesegs = 1;            // assume at least 1 line segment will get us there.
+    // Cap the split so a huge or non-finite delta cannot spin here either.
+    const long maxLineSegs = 100000;
     if (abs(deltaX) > abs(deltaY))
     {
       // slope <=1 case    
-      while ((abs(deltaX)/linesegs) > maxSegmentLength)
+      while (linesegs < maxLineSegs && (abs(deltaX)/linesegs) > maxSegmentLength)
       {
         linesegs++;
       }
@@ -380,7 +392,7 @@ void exec_drawBetweenPoints(float p1a, float p1b, float p2a, float p2b, int maxS
     else
     {
       // slope >1 case
-      while ((abs(deltaY)/linesegs) > maxSegmentLength)
+      while (linesegs < maxLineSegs && (abs(deltaY)/linesegs) > maxSegmentLength)
       {
         linesegs++;
       }

@@ -9,6 +9,15 @@ Polargraph server for PolarshieldSD v3
 Change log
 -----------
 
+2026.10.12 **v2.2.1**
+
+Builds again on current PlatformIO (espressif32 7.1.3) with pinned libraries,
+a fixed firmware-name script, and a GitHub Actions `pio run`. Endstop pins no
+longer overwrite the motor step and direction GPIOs. Stored-file playback no
+longer builds each command with `String`, and a `C17` whose segment length
+does not parse can no longer spin forever. See the pull request for what
+still needs a machine to confirm.
+
 2018.11.30-19:30 **v2.2.0**
 
 Added the pen width test feature back into the code. Why was it ever gone? I commented 
